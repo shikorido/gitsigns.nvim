@@ -1,3 +1,5 @@
+local PlenaryUtils = require('plenary.utils')
+
 local uv = vim.uv or vim.loop ---@diagnostic disable-line: deprecated
 
 local is_win = vim.fn.has('win32') == 1
@@ -30,8 +32,11 @@ end
 --- @return boolean
 function Path.is_abs(path)
   -- Check if the path is absolute on Windows
-  if is_win and M.cygpath(path):match('^%a:[/\\]') then
-    return true
+  if is_win then
+    if path:find("^%a:[\\/]") or (PlenaryUtils.is_msys2 and path:find("^/")) then
+      return true
+    end
+    return false
   end
 
   -- Check if the path is absolute on Unix-like systems
@@ -415,8 +420,11 @@ local has_cygpath --- @type boolean?
 --- @async
 --- @param path string
 --- @param mode? 'unix'|'windows' (default: 'windows')
+--- @param abs? boolean (default: true)
 --- @return string
-function M.cygpath(path, mode)
+function M.cygpath(path, mode, abs)
+  if abs == nil then abs = true end
+
   local async = require('gitsigns.async')
   local system = require('gitsigns.system').system
 
@@ -424,19 +432,23 @@ function M.cygpath(path, mode)
     has_cygpath = is_win and vim.fn.executable('cygpath') == 1
   end
 
-  if not has_cygpath or uv.fs_stat(path) then
+  -- `or uv.fs_stat(path)` will return early on windows path and
+  -- we won't be able to use cygpath for windows->msys2 path conversion.
+  if not has_cygpath then
     return path
   end
+
+  local cygpath_cmd = { 'cygpath' }
+  if abs then
+    table.insert(cygpath_cmd, '--absolute')
+  end
+  table.insert(cygpath_cmd, '--' .. (mode or 'windows'))
+  table.insert(cygpath_cmd, path)
 
   -- If on windows and path isn't recognizable as a file, try passing it
   -- through cygpath
   --- @type string
-  local stdout = async.await(3, system, {
-    'cygpath',
-    '--absolute',
-    '--' .. (mode or 'windows'),
-    path,
-  }, { text = true }).stdout
+  local stdout = async.await(3, system, cygpath_cmd, { text = true }).stdout
 
   async.schedule()
 
@@ -485,5 +497,24 @@ end
 function M.weak_ref(x)
   return setmetatable({ ref = x }, { __mode = 'v' })
 end
+
+-- Windows users can use git for windows or git from msys2 (or cygwin?).
+-- We should distinguish these git executables.
+M.win_git_flavor = is_win and (function()
+  local out = vim.fn.systemlist({ 'git', '--exec-path'})
+  if vim.v.shell_error ~= 0 or not out[1] then
+    return 'unknown'
+  end
+
+  local p = out[1]
+
+  if p:sub(1,1) == '/' then
+    return 'msys2'
+  elseif p:find('^[A-Za-z]:') then
+    return 'windows'
+  end
+
+  return 'unknown'
+end)() or nil
 
 return M

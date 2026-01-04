@@ -4,8 +4,52 @@ local util = require('gitsigns.util')
 
 local asystem = async.wrap(3, require('gitsigns.system').system)
 
+local PlenaryUtils = require("plenary.utils")
+
 --- @class Gitsigns.Git.JobSpec : vim.SystemOpts
 --- @field ignore_error? boolean
+
+local function normalize_git_args(args)
+  if util.win_git_flavor ~= 'msys2' then return args end
+
+  local out = {}
+  local i = 1
+
+  while i <= #args do
+    local arg = args[i]
+
+    -- --git-dir=/path
+    local k, v = arg:match('^(--git-dir)=(.+)$')
+    if k then
+      table.insert(out, k .. '=' .. PlenaryUtils.windows_to_posix(v))
+      i = i + 1
+
+    -- --work-tree=/path
+    elseif arg:find('--work-tree=') then
+      v = arg:match('^--work-tree=(.+)$')
+      table.insert(out, '--work-tree=' .. PlenaryUtils.windows_to_posix(v))
+      i = i + 1
+
+    -- --git-dir /path
+    -- --work-tree /path
+    --elseif arg == '--git-dir' or arg == '--work-tree' then
+    --  table.insert(out, arg)
+    --  table.insert(out, cygpath(args[i + 1]))
+    --  i = i + 2
+
+    -- directory or file arguments
+    elseif PlenaryUtils.is_windows_abs_path(arg) then
+      table.insert(out, PlenaryUtils.windows_to_posix(arg))
+      i = i + 1
+
+    else
+      table.insert(out, arg)
+      i = i + 1
+    end
+  end
+
+  return out
+end
 
 --- @async
 --- @param args string[]
@@ -16,6 +60,10 @@ local function git_command(args, spec)
   if spec.cwd then
     -- cwd must be a windows path and not a unix path
     spec.cwd = util.cygpath(spec.cwd)
+  end
+
+  if PlenaryUtils.is_msys2 then
+    args = normalize_git_args(args)
   end
 
   local cmd = {
@@ -52,6 +100,14 @@ local function git_command(args, spec)
     -- the split
     if stdout_lines[#stdout_lines] == '' then
       stdout_lines[#stdout_lines] = nil
+    end
+  end
+
+  if PlenaryUtils.is_msys2 then
+    for i, line in ipairs(stdout_lines) do
+      if PlenaryUtils.is_posix_abs_path(line) then
+        stdout_lines[i] = PlenaryUtils.posix_to_windows(line, "/")
+      end
     end
   end
 
